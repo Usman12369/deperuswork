@@ -1,0 +1,31 @@
+app = "deperusbot"
+primary_region = "lax"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  LANG = "C.UTF-8"
+  LC_ALL = "C.UTF-8"
+  # Timestamp to force rebuilds when deploying (do not remove)
+  BUILD_TS = "2025-11-14T14:50:00Z"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/health"
+
+[processes]
+  app = "/entrypoint.sh"
+
+[mounts]
+  source="bot_data"
+  destination="/app/data"
