@@ -2705,23 +2705,24 @@ def improved_banner_handler(message):
         file_id = None
         file_type = None
         file_size = 0
+        original_msg = message.reply_to_message
         
-        if message.reply_to_message.photo:
-            file_id = message.reply_to_message.photo[-1].file_id
+        if original_msg.photo:
+            file_id = original_msg.photo[-1].file_id
             file_type = 'photo'
-            file_size = message.reply_to_message.photo[-1].file_size or 0
-        elif message.reply_to_message.video:
-            file_id = message.reply_to_message.video.file_id
-            file_type = 'video' 
-            file_size = message.reply_to_message.video.file_size or 0
-        elif message.reply_to_message.voice:
-            file_id = message.reply_to_message.voice.file_id
+            file_size = original_msg.photo[-1].file_size or 0
+        elif original_msg.video:
+            file_id = original_msg.video.file_id
+            file_type = 'video'
+            file_size = original_msg.video.file_size or 0
+        elif original_msg.voice:
+            file_id = original_msg.voice.file_id
             file_type = 'voice'
-            file_size = message.reply_to_message.voice.file_size or 0
-        elif message.reply_to_message.audio:
-            file_id = message.reply_to_message.audio.file_id
+            file_size = original_msg.voice.file_size or 0
+        elif original_msg.audio:
+            file_id = original_msg.audio.file_id
             file_type = 'audio'
-            file_size = message.reply_to_message.audio.file_size or 0
+            file_size = original_msg.audio.file_size or 0
         else:
             bot.reply_to(message, "❌ Файл не найден! Ответьте на фото, видео, голосовое или музыку.")
             return
@@ -2745,13 +2746,13 @@ def improved_banner_handler(message):
         
         logger.info(f"Создана заявка на баннер #{request_id}")
         
-        # Отправляем админу
+        # Формируем текст для админа
         admin_text = f"🖼️ *НОВАЯ ЗАЯВКА НА БАННЕР #{request_id}*\n\n"
         admin_text += f"👤 Пользователь: {message.from_user.first_name}\n"
         admin_text += f"📛 Username: @{message.from_user.username or 'нет'}\n"
         admin_text += f"🆔 ID: {user_id}\n"
         admin_text += f"📁 Тип: {file_type}\n"
-        admin_text += f"📊 Размер: {file_size // 1024}KB\n\n"
+        admin_text += f"📊 Размер: {file_size // 1024} KB\n\n"
         admin_text += "✅ Принять или ❌ Отклонить?"
         
         admin_keyboard = InlineKeyboardMarkup()
@@ -2760,29 +2761,45 @@ def improved_banner_handler(message):
             InlineKeyboardButton("❌ Отклонить", callback_data=f"banner_reject_{request_id}")
         )
         
-        # Отправляем контент админу
+        # 1) Сначала отправим текстовую нотификацию админу (чтобы увидеть ошибки доставки)
         try:
-            if file_type == 'photo':
-                bot.send_photo(ADMIN_ID, file_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
-            elif file_type == 'video':
-                bot.send_video(ADMIN_ID, file_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
-            elif file_type == 'voice':
-                bot.send_voice(ADMIN_ID, file_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
-            elif file_type == 'audio':
-                bot.send_audio(ADMIN_ID, file_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
-            
-            logger.info(f"Заявка #{request_id} отправлена админу")
-            
+            bot.send_message(ADMIN_ID, f"Новая заявка на баннер #{request_id} от {message.from_user.id}")
         except Exception as e:
-            logger.error(f"Ошибка отправки админу: {e}")
-            bot.reply_to(message, "❌ Ошибка при отправке на модерацию!")
+            logger.error(f"Ошибка отправки текстовой нотификации админу: {e}")
+            # Если не можем уведомить админа — сообщаем пользователю и выходим
+            bot.reply_to(message, "❌ Не удалось уведомить администратора. Убедитесь, что админ запустил бот (нажал /start) и ADMIN_ID указан верно.")
             return
+        
+        # 2) Копируем оригинальное сообщение в чат админа с подписью и кнопками
+        try:
+            # copy_message сохраняет вложения и не требует скачивания
+            bot.copy_message(ADMIN_ID, message.chat.id, original_msg.message_id,
+                             caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
+            logger.info(f"Заявка #{request_id} отправлена админу через copy_message")
+        except Exception as e:
+            logger.error(f"Ошибка отправки заявки админу (copy_message): {e}")
+            # Попробуем fallback: отправить медиа напрямую по file_id
+            try:
+                if file_type == 'photo':
+                    bot.send_photo(ADMIN_ID, file_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
+                elif file_type == 'video':
+                    bot.send_video(ADMIN_ID, file_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
+                elif file_type == 'voice':
+                    bot.send_voice(ADMIN_ID, file_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
+                elif file_type == 'audio':
+                    bot.send_audio(ADMIN_ID, file_id, caption=admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
+                logger.info(f"Заявка #{request_id} отправлена админу через direct send as fallback")
+            except Exception as e2:
+                logger.error(f"Fallback отправка админу тоже упала: {e2}")
+                bot.reply_to(message, "❌ Не удалось отправить заявку админу (ошибка при отправке).")
+                return
         
         bot.reply_to(message, "✅ Заявка отправлена на рассмотрение администратору!")
         
     except Exception as e:
         logger.error(f"Ошибка запроса баннера: {e}")
         bot.reply_to(message, "❌ Произошла ошибка при отправке заявки!")
+
 
 # ОБРАБОТЧИКИ МОДЕРАЦИИ БАННЕРОВ
 @bot.callback_query_handler(func=lambda call: call.data.startswith('banner_accept_'))
