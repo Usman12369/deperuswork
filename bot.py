@@ -2689,6 +2689,16 @@ def improved_banner_handler(message):
     - Отправляет медиа админу (copy -> forward -> direct send), затем текст с кнопками
     """
     try:
+        logger.info("BANNER_HANDLER ENTER: user=%s chat=%s text=%r reply_to=%s",
+            message.from_user.id,
+            getattr(message.chat, 'id', None),
+            message.text,
+            bool(getattr(message, 'reply_to_message', None)))
+try:
+    bot.reply_to(message, "DEBUG: handler entered")  # временный ответ
+except Exception:
+    pass
+    
         logger.info(f"Получена команда баннера от {message.from_user.id} (chat {getattr(message.chat,'id',None)})")
         user_id = message.from_user.id
         user = db.get_user(user_id)
