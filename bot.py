@@ -908,20 +908,24 @@ def transfer_money_handler(message):
         logger.error(f"Transfer error: {e}")
         bot.reply_to(message, f"❌ Ошибка перевода: {str(e)}")
 
-@bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(профиль|profile)', m.text))
+@bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(профиль|profile)$', m.text))
 def profile_handler(message):
     try:
         user_id = message.from_user.id
         db.create_user(user_id, message.from_user.username, message.from_user.first_name)
         
+        # Определяем целевого пользователя
+        target_user_id = None
+        display_name = ""
+        
         if message.reply_to_message:
             target_user_id = message.reply_to_message.from_user.id
+            target_user = message.reply_to_message.from_user
             user = db.get_user(target_user_id)
             if not user:
                 bot.reply_to(message, "❌ Пользователь не найден в базе")
                 return
-            username = message.reply_to_message.from_user.first_name
-            display_name = format_username(target_user_id, message.reply_to_message.from_user.username, username)
+            display_name = format_username(target_user_id, target_user.username, target_user.first_name)
         else:
             parts = message.text.split()
             if len(parts) > 1:
@@ -933,6 +937,7 @@ def profile_handler(message):
                     user = c.fetchone()
                     conn.close()
                     if user:
+                        target_user_id = user[0]
                         display_name = format_username(user[0], user[1], user[2])
                     else:
                         bot.reply_to(message, "❌ Пользователь не найден")
@@ -941,72 +946,97 @@ def profile_handler(message):
                     bot.reply_to(message, "❌ Укажите @username пользователя")
                     return
             else:
-                user_id = message.from_user.id
-                user = db.get_user(user_id)
+                target_user_id = user_id
+                user = db.get_user(target_user_id)
                 if not user:
                     bot.reply_to(message, "❌ Пользователь не найден")
                     return
-                username = message.from_user.first_name
-                display_name = format_username(user_id, message.from_user.username, username)
+                display_name = format_username(user_id, message.from_user.username, message.from_user.first_name)
         
-        # ДОБАВЛЕНА ПРОВЕРКА НА НАЛИЧИЕ ПОЛЬЗОВАТЕЛЯ
+        # Получаем данные пользователя
+        user = db.get_user(target_user_id)
         if not user:
             bot.reply_to(message, "❌ Пользователь не найден")
             return
-
-        # БЕЗОПАСНОЕ ИСПОЛЬЗОВАНИЕ ИНДЕКСОВ
-        user_balance = user[3] if len(user) > 3 else 0
-        user_depuses = user[4] if len(user) > 4 else 0
-        user_vip_until = user[5] if len(user) > 5 else None
-        user_prefix = user[6] if len(user) > 6 else ""
-        user_brackets = user[7] if len(user) > 7 else "[]"
-        user_wins = user[8] if len(user) > 8 else 0
-        user_losses = user[9] if len(user) > 9 else 0
-        user_messages = user[10] if len(user) > 10 else 0
-        user_banner_file_id = user[25] if len(user) > 25 else None
-        user_banner_type = user[26] if len(user) > 26 else None
-
+        
+        # Извлекаем данные из кортежа
+        user_id_db = user[0]
+        username = user[1]
+        first_name = user[2]
+        balance = user[3] if len(user) > 3 else 0
+        depuses = user[4] if len(user) > 4 else 0
+        vip_until = user[5] if len(user) > 5 else None
+        prefix = user[6] if len(user) > 6 else ""
+        brackets = user[7] if len(user) > 7 else "[]"
+        wins = user[8] if len(user) > 8 else 0
+        losses = user[9] if len(user) > 9 else 0
+        messages = user[10] if len(user) > 10 else 0
+        banner_file_id = user[25] if len(user) > 25 else None
+        banner_type = user[26] if len(user) > 26 else None
+        
+        # Форматируем имя для профиля
         disp = safe_md(display_name)
         profile_text = f"*{disp}*\n\n"
-
-        if user_vip_until and datetime.fromisoformat(user_vip_until) > datetime.now():
-            profile_text += "👑 *VIP пропуск есть*\n\n"
-
+        
+        # Проверяем VIP статус
+        vip_active = False
+        if vip_until:
+            try:
+                vip_dt = datetime.fromisoformat(vip_until)
+                if vip_dt > datetime.now():
+                    vip_active = True
+                    remaining = vip_dt - datetime.now()
+                    days = remaining.days
+                    hours = remaining.seconds // 3600
+                    minutes = (remaining.seconds % 3600) // 60
+                    profile_text += f"👑 *VIP активен:* {days}д {hours}ч {minutes}м осталось\n\n"
+            except Exception as e:
+                logger.error(f"Ошибка парсинга VIP даты: {e}")
+        
+        # Информация о квартирах
         conn = sqlite3.connect('/app/data/bot.db')
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM apartments WHERE user_id=?", (user[0],))
+        c.execute("SELECT COUNT(*) FROM apartments WHERE user_id=?", (target_user_id,))
         total_apartments = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM apartments WHERE user_id=? AND renovated=1", (user[0],))
+        c.execute("SELECT COUNT(*) FROM apartments WHERE user_id=? AND renovated=1", (target_user_id,))
         renovated_apartments = c.fetchone()[0]
         conn.close()
-
+        
         profile_text += f"🏠 *Квартиры:*\n"
         profile_text += f"• С ремонтом: `{renovated_apartments}`\n"
-        profile_text += f"• Без ремонта: `{total_apartments - renovated_apartments}`\n\n"
-
+        profile_text += f"• Без ремонта: `{total_apartments - renovated_apartments}`\n"
+        profile_text += f"• Всего: `{total_apartments}`\n\n"
+        
         profile_text += f"💎 *Баланс:*\n"
-        profile_text += f"💰 Тенге: `{user_balance:,}`\n"
-        profile_text += f"🎯 Депусы: `{user_depuses:,}`\n\n"
-
+        profile_text += f"💰 Тенге: `{balance:,}`\n"
+        profile_text += f"🎯 Депусы: `{depuses:,}`\n\n"
+        
         profile_text += f"📊 *Статистика:*\n"
-        profile_text += f"✅ Побед: `{user_wins}`\n"
-        profile_text += f"❌ Поражений: `{user_losses}`\n"
-        profile_text += f"💬 Сообщений: `{user_messages}`"
-
-        if user_vip_until and datetime.fromisoformat(user_vip_until) > datetime.now():
-            until = datetime.fromisoformat(user_vip_until)
-            remaining = until - datetime.now()
-            days = remaining.days
-            hours = remaining.seconds // 3600
-            profile_text += f"\n\n⏰ *VIP закончится через:* {days}д {hours}ч"
-
-        # Проверяем и отправляем баннер если есть
-        vip_active = user_vip_until and datetime.fromisoformat(user_vip_until) > datetime.now()
-        if user_banner_file_id and user_banner_type and vip_active:
-            file_id = user_banner_file_id
-            file_type = user_banner_type
+        profile_text += f"✅ Побед: `{wins}`\n"
+        profile_text += f"❌ Поражений: `{losses}`\n"
+        profile_text += f"💬 Сообщений: `{messages}`"
+        
+        # Проверяем возможность отправки баннера
+        send_with_banner = False
+        banner_data = None
+        
+        if vip_active and banner_file_id and banner_type:
+            # Проверяем существование баннера в БД
+            conn = sqlite3.connect('/app/data/bot.db')
+            c = conn.cursor()
+            c.execute("SELECT banner_file_id, banner_type FROM users WHERE user_id=? AND banner_file_id IS NOT NULL", (target_user_id,))
+            banner_data = c.fetchone()
+            conn.close()
             
+            if banner_data and banner_data[0]:
+                send_with_banner = True
+        
+        # Отправляем профиль
+        if send_with_banner:
             try:
+                file_id = banner_data[0]
+                file_type = banner_data[1]
+                
                 if file_type == 'photo':
                     bot.send_photo(message.chat.id, file_id, caption=profile_text, parse_mode='Markdown')
                 elif file_type == 'video':
@@ -1015,16 +1045,22 @@ def profile_handler(message):
                     bot.send_voice(message.chat.id, file_id, caption=profile_text, parse_mode='Markdown')
                 elif file_type == 'audio':
                     bot.send_audio(message.chat.id, file_id, caption=profile_text, parse_mode='Markdown')
-                return
+                elif file_type == 'animation':
+                    bot.send_animation(message.chat.id, file_id, caption=profile_text, parse_mode='Markdown')
+                else:
+                    # Неизвестный тип файла - отправляем текст
+                    bot.reply_to(message, profile_text, parse_mode='Markdown')
+                    
             except Exception as e:
-                logger.error(f"Ошибка отправки баннера: {e}")
+                logger.error(f"Ошибка отправки профиля с баннером: {e}")
                 # Если ошибка, отправляем обычный текст
                 bot.reply_to(message, profile_text, parse_mode='Markdown')
         else:
+            # Без баннера - просто текст
             bot.reply_to(message, profile_text, parse_mode='Markdown')
-
+            
     except Exception as e:
-        logger.error(f"Ошибка в профиле: {e}")
+        logger.error(f"Ошибка в профиле: {e}", exc_info=True)
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
 @bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(топ|top)', m.text))
