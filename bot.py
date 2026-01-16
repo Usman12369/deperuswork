@@ -2784,11 +2784,14 @@ def improved_banner_handler(message):
             return
 
         # Подготовка сообщения админу
+        # Подготовка текста и кнопок дл�� админа (с экранированием Markdown)
+        safe_first = safe_md(message.from_user.first_name or "")
+        safe_username = safe_md(message.from_user.username or "нет")
         admin_text = (f"🖼️ *НОВАЯ ЗАЯВКА НА БАННЕР #{request_id}*\n\n"
-                      f"👤 Пользователь: {message.from_user.first_name}\n"
-                      f"📛 Username: @{message.from_user.username or 'нет'}\n"
+                      f"👤 Пользователь: {safe_first}\n"
+                      f"📛 Username: @{safe_username}\n"
                       f"🆔 ID: {user_id}\n"
-                      f"📁 Тип: {file_type}\n"
+                      f"📁 Тип: {safe_md(file_type)}\n"
                       f"📊 Размер: {file_size // 1024 if file_size else 0} KB\n\n"
                       "✅ Принять или ❌ Отклонить?")
         admin_keyboard = InlineKeyboardMarkup()
@@ -2797,6 +2800,16 @@ def improved_banner_handler(message):
             InlineKeyboardButton("❌ Отклонить", callback_data=f"banner_reject_{request_id}")
         )
 
+        # Попытки отправки админу: media first, then text with buttons
+        # ... (media send code unchanged) ...
+
+        # Отправляем текст с кнопками админу (в любом случае)
+        try:
+            bot.send_message(ADMIN_ID, admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
+        except Exception as e:
+            logger.error("BANNER: Failed to send admin_text for request %s: %s", request_id, e)
+            send_errors.append(f"text:{e}")
+            
         # Попытки отправки админу: media first, then text
         send_errors = []
         sent_media = False
