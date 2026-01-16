@@ -2680,36 +2680,26 @@ def improved_rp_handler(message):
         logger.error(f"Ошибка в улучшенном РП обработчике: {e}")
 
 # ИСПРАВЛЕННАЯ СИСТЕМА БАННЕРОВ
-@bot.message_handler(func=lambda m: m.text and any(cmd in m.text.strip().lower() for cmd in ['+постер', '+баннер']))
+@bot.message_handler(func=lambda m: m.text and re.search(r'(?i)^\s*(?:\+баннер|\+постер)\b', m.text))
 def improved_banner_handler(message):
     """
-    Приём заявки на баннер:
-    - Только медиа: photo, video, voice, audio, animation (document не принимается)
-    - Сразу отвечает пользователю, что заявка отправлена на модерацию
-    - Отправляет медиа админу (copy -> forward -> direct send), затем текст с кнопками
+    Обработчик заявок на баннеры:
+    - Принимает только photo/video/voice/audio/animation (document не принимается)
+    - Сохраняет заявку в БД и отвечает пользователю сразу
+    - Пытается отправить админу: copy_message -> forward_message -> direct send, затем текст с кнопками
     """
     try:
-        logger.info("BANNER_HANDLER ENTER: user=%s chat=%s text=%r reply_to=%s",
-            message.from_user.id,
-            getattr(message.chat, 'id', None),
-            message.text,
-            bool(getattr(message, 'reply_to_message', None)))
-try:
-    bot.reply_to(message, "DEBUG: handler entered")  # временный ответ
-except Exception:
-    pass
-    
-        logger.info(f"Получена команда баннера от {message.from_user.id} (chat {getattr(message.chat,'id',None)})")
+        logger.info("Получена команда баннера от %s (chat %s)", message.from_user.id, getattr(message.chat, 'id', None))
+
         user_id = message.from_user.id
         user = db.get_user(user_id)
-
         if not user:
             bot.reply_to(message, "❌ Пользователь не найден в базе!")
             return
 
-        # VIP проверка
-        vip_until = user[5]
+        # VIP проверка (если нужно временно пропустить — раскомментируй соответствующие строки)
         try:
+            vip_until = user[5] if len(user) > 5 else None
             if not vip_until or datetime.fromisoformat(vip_until) <= datetime.now():
                 bot.reply_to(message, "❌ Эта функция доступна только для VIP пользователей!")
                 return
@@ -2717,13 +2707,13 @@ except Exception:
             bot.reply_to(message, "❌ Невозможно проверить VIP-статус. Обратитесь к администратору.")
             return
 
-        if not message.reply_to_message:
+        if not getattr(message, 'reply_to_message', None):
             bot.reply_to(message, "❌ Ответьте этой командой на фото/видео/голосовое/аудио/анимацию, чтобы отправить баннер.")
             return
 
         original_msg = message.reply_to_message
 
-        # Определяем медиа
+        # Определяем поддерживаемое медиа
         file_id = None
         file_type = None
         file_size = 0
@@ -2749,31 +2739,30 @@ except Exception:
             file_type = 'animation'
             file_size = original_msg.animation.file_size or 0
         else:
-            bot.reply_to(message, "❌ Неподдерживаемый тип файла. Только фото/видео/голосовое/аудио/анимация.")
+            bot.reply_to(message, "❌ Неподдерживаемый тип файла. Тол��ко фото/видео/голосовое/аудио/анимация.")
             return
 
-        # Ограничение размера (20 MB)
+        # Ограничение размера 20MB
         MAX_FILE_SIZE = 20 * 1024 * 1024
         if file_size and file_size > MAX_FILE_SIZE:
             bot.reply_to(message, "❌ Файл слишком большой! Максимум 20 MB.")
             return
 
-        # Сохраняем заявку
+        # Сохраняем заявку в БД
         try:
             conn = sqlite3.connect('/app/data/bot.db')
             c = conn.cursor()
             c.execute('''INSERT INTO banner_requests (user_id, file_id, file_type, file_size, status)
-                         VALUES (?, ?, ?, ?, ?)''',
-                      (user_id, file_id, file_type, file_size or 0, 'pending'))
+                         VALUES (?, ?, ?, ?, ?)''', (user_id, file_id, file_type, file_size or 0, 'pending'))
             conn.commit()
             request_id = c.lastrowid
             conn.close()
         except Exception as e:
-            logger.error(f"DB error saving banner request: {e}")
+            logger.error("DB error saving banner request: %s", e)
             bot.reply_to(message, "❌ Ошибка при сохранении заявки. Попробуйте позже.")
             return
 
-        # Немедленный ответ пользователю (чтобы не молчал)
+        # Немедленная обратная связь пользователю
         try:
             bot.reply_to(message, "✅ Ваша заявка принята и отправлена на модерацию. Администратор получит файл и сможет принять или отклонить его.")
         except Exception:
@@ -2793,33 +2782,30 @@ except Exception:
             InlineKeyboardButton("❌ Отклонить", callback_data=f"banner_reject_{request_id}")
         )
 
-        # Попытки отправки админу: сначала медиа, затем текст с кнопками
+        # Попытки отправки админу: media first, then text with buttons
         send_errors = []
         sent_media = False
 
-        # 1) copy_message
+        # 1) copy_message (если возможно)
         try:
-            try:
-                bot.copy_message(ADMIN_ID, original_msg.chat.id, original_msg.message_id)
-            except TypeError:
-                bot.copy_message(ADMIN_ID, original_msg.chat.id, original_msg.message_id)
+            bot.copy_message(ADMIN_ID, original_msg.chat.id, original_msg.message_id)
             sent_media = True
-            logger.info(f"banner #{request_id} media sent via copy_message to admin")
+            logger.info("banner #%s media sent via copy_message to admin", request_id)
         except Exception as e:
-            logger.warning(f"copy_message failed: {e}")
+            logger.warning("copy_message failed: %s", e)
             send_errors.append(f"copy:{e}")
 
-        # 2) forward
+        # 2) forward_message
         if not sent_media:
             try:
                 bot.forward_message(ADMIN_ID, original_msg.chat.id, original_msg.message_id)
                 sent_media = True
-                logger.info(f"banner #{request_id} media sent via forward_message to admin")
+                logger.info("banner #%s media sent via forward_message to admin", request_id)
             except Exception as e:
-                logger.warning(f"forward_message failed: {e}")
+                logger.warning("forward_message failed: %s", e)
                 send_errors.append(f"forward:{e}")
 
-        # 3) direct send
+        # 3) direct send by file_id
         if not sent_media:
             try:
                 if file_type == 'photo':
@@ -2835,20 +2821,21 @@ except Exception:
                 else:
                     raise Exception("unsupported file_type")
                 sent_media = True
-                logger.info(f"banner #{request_id} media sent via direct send to admin ({file_type})")
+                logger.info("banner #%s media sent via direct send to admin (%s)", request_id, file_type)
             except Exception as e:
-                logger.error(f"direct send failed: {e}")
+                logger.error("direct send failed: %s", e)
                 send_errors.append(f"direct:{e}")
 
-        # Текст с кнопками (в любом случае пробуем отправить)
+        # Отправляем текст с кнопками админу (попробуем в любом случае)
         try:
             bot.send_message(ADMIN_ID, admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
         except Exception as e:
-            logger.error(f"Failed to send admin_text for banner #{request_id}: {e}")
+            logger.error("Failed to send admin_text for banner #%s: %s", request_id, e)
             send_errors.append(f"text:{e}")
 
-        if not sent_media and len(send_errors) > 0:
-            logger.error(f"Не удалось отправить заявку #{request_id} админу. Ошибки: {send_errors}")
+        # Если вообще ничего не дошло — обновим статус и уведомим юзера в чате
+        if not sent_media and send_errors:
+            logger.error("Не удалось доставить заявку #%s админу. Ошибки: %s", request_id, send_errors)
             try:
                 conn = sqlite3.connect('/app/data/bot.db')
                 c = conn.cursor()
@@ -2864,13 +2851,13 @@ except Exception:
                 pass
 
     except Exception as e:
-        logger.error(f"Ошибка запроса баннера (unexpected): {e}")
+        # Глобальный catch — логируем и даём пользователю сообщение об ошибке
+        logger.error("Ошибка запроса баннера (unexpected): %s", e)
         logger.error(traceback.format_exc())
         try:
             bot.reply_to(message, "❌ Произошла ошибка при отправке заявки! Попробуйте позже.")
         except Exception:
             pass
-
 
 # ОБРАБОТЧИКИ МОДЕРАЦИИ БАННЕРОВ
 @bot.callback_query_handler(func=lambda call: call.data.startswith('banner_accept_'))
