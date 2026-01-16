@@ -711,30 +711,42 @@ def casino_handler(message):
             bot.reply_to(message, f"❌ Максимальная ставка: {MAX_BET_LIMIT:,} т")
             return
 
-        rand = random.random()
-        if rand <= 0.05:
-            win = amount * 10
-            result = "🎉 *ДЖЕКПОТ! x10*"
-            if win > user[14]:
-                db.update_user(user_id, biggest_win=win)
-        elif rand <= 0.15:
-            win = amount * 5
-            result = "🔥 *ОГОНЬ! x5*"
-            if win > user[14]:
-                db.update_user(user_id, biggest_win=win)
-        elif rand <= 0.30:
-            win = amount * 2
-            result = "👍 *ХОРОШО! x2*"
-            if win > user[14]:
-                db.update_user(user_id, biggest_win=win)
-        elif rand <= 0.50:
-            win = amount
-            result = "✅ *ВЕРНУЛ! x1*"
-        else:
-            win = 0
-            result = "💀 *ПРОИГРЫШ! x0*"
-            if amount > user[15]:
-                db.update_user(user_id, biggest_loss=amount)
+rand = random.random()
+if rand <= 0.03:  # 3%
+    win = amount * 10
+    result = "🎉 *ДЖЕКПОТ! x10*"
+    if win > user[14]:
+        db.update_user(user_id, biggest_win=win)
+elif rand <= 0.11:  # 3% + 8% = 11%
+    win = amount * 5
+    result = "🔥 *ОГОНЬ! x5*"
+    if win > user[14]:
+        db.update_user(user_id, biggest_win=win)
+elif rand <= 0.25:  # 11% + 14% = 25%
+    win = amount * 2
+    result = "👍 *ХОРОШО! x2*"
+    if win > user[14]:
+        db.update_user(user_id, biggest_win=win)
+elif rand <= 0.40:  # 25% + 15% = 40%
+    win = amount * 1.5  # x1.5
+    result = "✨ *НЕПЛОХО! x1.5*"
+    if win > user[14]:
+        db.update_user(user_id, biggest_win=win)
+else:
+    # Всё что осталось (60%) - проигрыши
+    # Разделяем на x0.5 (20%) и x0 (40%)
+    if rand <= 0.60:  # 40% + 20% = 60%
+        win = amount * 0.5  # x0.5 - теряешь половину
+        result = "😥 *ПОТЕРЯЛ ПОЛОВИНУ! x0.5*"
+        # Записываем в biggest_loss если это большая потеря
+        loss_amount = amount - win  # Сколько потеряли
+        if loss_amount > user[15]:
+            db.update_user(user_id, biggest_loss=loss_amount)
+    else:  # Оставшиеся 40%
+        win = 0  # x0 - теряешь всё
+        result = "💀 *ПРОИГРЫШ! x0*"
+        if amount > user[15]:
+            db.update_user(user_id, biggest_loss=amount)
 
         new_balance = user[3] - amount + win
         db.update_user(user_id, balance=new_balance, last_casino=current_time)
