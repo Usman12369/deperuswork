@@ -2679,6 +2679,7 @@ def improved_rp_handler(message):
     except Exception as e:
         logger.error(f"Ошибка в улучшенном РП обработчике: {e}")
 
+# ====== ЗАМЕНИТЬ improved_banner_handler НА СЛЕДУЮЩУЮ РЕАЛИЗАЦИЮ ======
 @bot.message_handler(func=lambda m: m.text and any(cmd in m.text.strip().lower() for cmd in ['+постер', '+баннер']))
 def improved_banner_handler(message):
     try:
@@ -2701,12 +2702,12 @@ def improved_banner_handler(message):
             return
 
         if not message.reply_to_message:
-            bot.reply_to(message, "❌ Ответьте этой командой на фото, видео, голосовое сообщение или музыку!")
+            bot.reply_to(message, "❌ Ответьте этой командой на фото, видео, голосовое сообщение, аудио или анимацию!")
             return
 
         original_msg = message.reply_to_message
 
-        # Поддерживаем только media: фото, видео, voice, audio, animation (не document)
+        # Поддерживаем только media: фото, видео, voice, audio, animation (НЕ document)
         file_id = None
         file_type = None
         file_size = 0
@@ -2733,7 +2734,7 @@ def improved_banner_handler(message):
             file_size = original_msg.animation.file_size or 0
         else:
             # Не принимаем document и т.п.
-            bot.reply_to(message, "❌ Файл не подходящего типа. Ответьте фото, видео, голосовое, аудио или анимацией.")
+            bot.reply_to(message, "❌ Неподдерживаемый тип файла. Ответьте фото, видео, голосовое, аудио или анимацией.")
             return
 
         # Ограничение размера (20 MB)
@@ -2766,25 +2767,31 @@ def improved_banner_handler(message):
         admin_keyboard = InlineKeyboardMarkup()
         admin_keyboard.row(
             InlineKeyboardButton("✅ Принять", callback_data=f"banner_accept_{request_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"banner_reject_{request_id}")
+            InlineKeyboardButton("❌ ��тклонить", callback_data=f"banner_reject_{request_id}")
         )
 
         # Попытки доставки админу (порядок: copy -> forward + подпись -> direct send по file_id)
         send_success = False
         send_errors = []
 
-        # 1) copy_message (попробуем скопировать сообщение в личку админу)
+        # 1) Попробуем copy_message (копирование сообщения в личку админа)
         try:
-            bot.copy_message(ADMIN_ID, original_msg.chat.id, original_msg.message_id)
-            # Отправим подпись отдельно с кнопками (copy_message может не позволять менять caption)
-            bot.send_message(ADMIN_ID, admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
+            # Некоторые версии telebot поддерживают caption/parse_mode/reply_markup в copy_message, некоторые нет.
+            # Пытаемся с caption, но если упадёт — поймаем исключение и попробуем другие варианты.
+            try:
+                bot.copy_message(ADMIN_ID, original_msg.chat.id, original_msg.message_id,
+                                 caption=admin_text, parse_mode='Markdown', reply_markup=admin_keyboard)
+            except TypeError:
+                # В редких реализациях copy_message не принимает caption/parse_mode/reply_markup
+                bot.copy_message(ADMIN_ID, original_msg.chat.id, original_msg.message_id)
+                bot.send_message(ADMIN_ID, admin_text, reply_markup=admin_keyboard, parse_mode='Markdown')
             send_success = True
             logger.info(f"Заявка #{request_id} отправлена админу через copy_message")
         except Exception as e:
             logger.warning(f"copy_message failed: {e}")
             send_errors.append(f"copy:{e}")
 
-        # 2) forward_message + подпись, если copy не сработал
+        # 2) Если не получилось — forward_message + подпись
         if not send_success:
             try:
                 bot.forward_message(ADMIN_ID, original_msg.chat.id, original_msg.message_id)
@@ -2795,7 +2802,7 @@ def improved_banner_handler(message):
                 logger.warning(f"forward_message failed: {e}")
                 send_errors.append(f"forward:{e}")
 
-        # 3) direct send media by file_id (fallback)
+        # 3) Если и это не сработало — отправим медиа напрямую по file_id
         if not send_success:
             try:
                 if file_type == 'photo':
@@ -2830,7 +2837,7 @@ def improved_banner_handler(message):
                 pass
 
             bot.reply_to(message, ("❌ Не удалось уведомить администратора. Возможные причины:\n"
-                                   "• Админ не нажимал /start в диалоге с ботом\n"
+                                   "• Админ не нажимал /start в личке бота\n"
                                    "• Бот не имеет доступа к оригинальному сообщению (права/privacy)\n"
                                    "• Временная ошибка Telegram API\n\n"
                                    "Проверьте лог бота."))
@@ -2838,16 +2845,7 @@ def improved_banner_handler(message):
 
         # Успешно отправлено админу
         bot.reply_to(message, "✅ Заявка отправлена на рассмотрение администратору!")
-        # Сохраним статус pending (на случай, если хотим отслеживать)
-        try:
-            conn = sqlite3.connect('/app/data/bot.db')
-            c = conn.cursor()
-            c.execute("UPDATE banner_requests SET status=? WHERE request_id=?", ('pending', request_id))
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
-
+        # Статус уже 'pending' в БД — оставляем так
     except Exception as e:
         logger.error(f"Ошибка запроса баннера (unexpected): {e}")
         logger.error(traceback.format_exc())
@@ -2855,91 +2853,137 @@ def improved_banner_handler(message):
             bot.reply_to(message, "❌ Произошла ошибка при отправке заявки! Попробуйте позже.")
         except Exception:
             pass
-            
+# ====== КОНЕЦ improved_banner_handler ======
+
 # ОБРАБОТЧИКИ МОДЕРАЦИИ БАННЕРОВ
+# ====== ЗАМЕНИТЬ accept_banner_handler НА СЛЕДУЮЩУЮ РЕАЛИЗАЦИЮ ======
 @bot.callback_query_handler(func=lambda call: call.data.startswith('banner_accept_'))
 def accept_banner_handler(call):
     try:
         request_id = int(call.data.split('_')[2])
-        
         conn = sqlite3.connect('/app/data/bot.db')
         c = conn.cursor()
-        
-        c.execute('''SELECT user_id, file_id, file_type FROM banner_requests 
-                     WHERE request_id=? AND status='pending' ''', (request_id,))
+
+        c.execute('''SELECT user_id, file_id, file_type, status FROM banner_requests 
+                     WHERE request_id=?''', (request_id,))
         request_data = c.fetchone()
-        
+
         if not request_data:
             bot.answer_callback_query(call.id, "❌ Заявка не найдена")
+            conn.close()
             return
-        
-        user_id, file_id, file_type = request_data
-        
+
+        user_id, file_id, file_type, status = request_data
+
+        if status != 'pending' and status != 'error':
+            bot.answer_callback_query(call.id, "❌ Эта заявка уже обработана")
+            conn.close()
+            return
+
         # Обновляем баннер пользователя
         c.execute('''UPDATE users SET banner_file_id=?, banner_type=? WHERE user_id=?''',
-                 (file_id, file_type, user_id))
-        
+                  (file_id, file_type, user_id))
+
         # Обновляем статус заявки
         c.execute('''UPDATE banner_requests SET status='accepted', admin_id=?, decision_date=?
                      WHERE request_id=?''',
-                 (call.from_user.id, datetime.now().isoformat(), request_id))
-        
+                  (call.from_user.id, datetime.now().isoformat(), request_id))
         conn.commit()
         conn.close()
-        
-        # Уведомляем пользователя
+
+        # Попытка уведомить пользователя и отправить ему баннер
         try:
-            bot.send_message(user_id, "✅ Ваш баннер одобрен! Теперь он будет отображаться в вашем профиле.")
-        except:
-            pass
-        
-        bot.edit_message_text(f"✅ Баннер #{request_id} одобрен!", 
-                             call.message.chat.id, call.message.message_id)
+            caption = "✅ Ваш баннер одобрен! Он будет отображаться в профиле (если VIP активен)."
+            if file_type == 'photo':
+                bot.send_photo(user_id, file_id, caption=caption)
+            elif file_type == 'video':
+                bot.send_video(user_id, file_id, caption=caption)
+            elif file_type == 'voice':
+                bot.send_voice(user_id, file_id, caption=caption)
+            elif file_type == 'audio':
+                bot.send_audio(user_id, file_id, caption=caption)
+            elif file_type == 'animation':
+                bot.send_animation(user_id, file_id, caption=caption)
+            else:
+                bot.send_message(user_id, "✅ Ваш баннер одобрен!")
+        except Exception as e:
+            logger.warning(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
+            # всё равно продолжаем
+
+        # Обновим сообщение у админа
+        try:
+            bot.edit_message_text(f"✅ Баннер #{request_id} одобрен!", call.message.chat.id, call.message.message_id)
+        except Exception:
+            try:
+                bot.send_message(call.message.chat.id, f"✅ Баннер #{request_id} одобрен!")
+            except Exception:
+                pass
+
         bot.answer_callback_query(call.id, "✅ Баннер принят!")
-        
     except Exception as e:
         logger.error(f"Ошибка принятия баннера: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!")
+        logger.error(traceback.format_exc())
+        try:
+            bot.answer_callback_query(call.id, "❌ Ошибка при принятии")
+        except Exception:
+            pass
+# ====== КОНЕЦ accept_banner_handler ======
 
+# ====== ЗАМЕНИТЬ reject_banner_handler НА СЛЕДУЮЩУЮ РЕАЛИЗАЦИЮ ======
 @bot.callback_query_handler(func=lambda call: call.data.startswith('banner_reject_'))
 def reject_banner_handler(call):
     try:
         request_id = int(call.data.split('_')[2])
-        
         conn = sqlite3.connect('/app/data/bot.db')
         c = conn.cursor()
-        
-        c.execute('''SELECT user_id FROM banner_requests 
-                     WHERE request_id=? AND status='pending' ''', (request_id,))
+
+        c.execute('''SELECT user_id, status FROM banner_requests 
+                     WHERE request_id=?''', (request_id,))
         request_data = c.fetchone()
-        
+
         if not request_data:
             bot.answer_callback_query(call.id, "❌ Заявка не найдена")
+            conn.close()
             return
-        
-        user_id = request_data[0]
-        
+
+        user_id, status = request_data
+
+        if status != 'pending' and status != 'error':
+            bot.answer_callback_query(call.id, "❌ Эта заявка уже обработана")
+            conn.close()
+            return
+
         # Обновляем статус заявки
         c.execute('''UPDATE banner_requests SET status='rejected', admin_id=?, decision_date=?
                      WHERE request_id=?''',
-                 (call.from_user.id, datetime.now().isoformat(), request_id))
-        
+                  (call.from_user.id, datetime.now().isoformat(), request_id))
         conn.commit()
         conn.close()
-        
+
         # Уведомляем пользователя
         try:
-            bot.send_message(user_id, "❌ Ваш баннер отклонен администратором.")
-        except:
-            pass
-        
-        bot.edit_message_text(f"❌ Баннер #{request_id} отклонен!", 
-                             call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id, "❌ Баннер отклонен!")
-        
+            bot.send_message(user_id, "❌ Ваш баннер отклонён администратором.")
+        except Exception as e:
+            logger.warning(f"Не удалось уведомить пользователя {user_id} об отклонении: {e}")
+
+        # Обновим сообщение у админа
+        try:
+            bot.edit_message_text(f"❌ Баннер #{request_id} от��лонён!", call.message.chat.id, call.message.message_id)
+        except Exception:
+            try:
+                bot.send_message(call.message.chat.id, f"❌ Баннер #{request_id} отклонён!")
+            except Exception:
+                pass
+
+        bot.answer_callback_query(call.id, "❌ Баннер отклонён!")
     except Exception as e:
         logger.error(f"Ошибка отклонения баннера: {e}")
-        bot.answer_callback_query(call.id, "❌ Ошибка!")
+        logger.error(traceback.format_exc())
+        try:
+            bot.answer_callback_query(call.id, "❌ Ошибка при отклонении")
+        except Exception:
+            pass
+# ====== КОНЕЦ reject_banner_handler ======
 
 # ========== ОБЩИЙ ХЭНДЛЕР ДЛЯ СТАТИСТИКИ ==========
 @bot.message_handler(content_types=['text'])
