@@ -2637,7 +2637,7 @@ def format_rp_name(user_id, username, first_name):
     return first_name
 
 # ПЕРЕПИСАННЫЙ ОБРАБОТЧИК РП КОМАНД
-@bot.message_handler(func=lambda m: m.text and m.reply_to_message)
+@bot.message_handler(func=lambda m: m.text and m.reply_to_message and not any(m.text.strip().lower().startswith(cmd) for cmd in ['+постер','+баннер'])) 
 def improved_rp_handler(message):
     try:
         command = message.text.strip().lower()
