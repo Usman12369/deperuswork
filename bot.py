@@ -2518,7 +2518,7 @@ def my_rp_commands_handler(message):
         bot.reply_to(message, "❌ Произошла ошибка")
 
 # Обработчик кастомных РП команд
-@bot.message_handler(func=lambda m: m.text and m.reply_to_message)
+@bot.message_handler(func=lambda m: m.text and m.reply_to_message and not re.search(r'(?i)^\s*(?:\+баннер|\+постер)\b', m.text))
 def custom_rp_handler(message):
     try:
         command = message.text.strip().lower()
