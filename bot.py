@@ -15,6 +15,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import html
 import urllib.parse
 import traceback
+import requests
 
 if sys.stdout.encoding != 'UTF-8':
     sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
@@ -3599,50 +3600,115 @@ def process_custom_prefix(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
 
-
 # ========== ЗАПУСК БОТА ==========
 if __name__ == "__main__":
-
     logger.info("🤖 Бот запускается...")
+    
+    # Шаг 1: Удаляем вебхук
+    try:
+        webhook_url = f"https://api.telegram.org/bot{TOKEN}/deleteWebhook"
+        response = requests.get(webhook_url, params={"drop_pending_updates": True}, timeout=5)
+        logger.info(f"✅ Вебхук удален: {response.status_code}")
+        time.sleep(1)
+    except Exception as e:
+        logger.warning(f"Не удалось удалить вебхук через API: {e}")
+    
+    # Шаг 2: Удаляем через telebot на всякий случай
+    try:
+        bot.remove_webhook()
+        time.sleep(0.5)
+    except:
+        pass
+    
+    # Шаг 3: Проверяем подключение и отправляем уведомление админу
     try:
         bot_info = bot.get_me()
         logger.info(f"✅ Подключение к Telegram API: {bot_info.first_name} (@{bot_info.username})")
+        
         try:
             db_file = '/app/data/bot.db'
             try:
                 db_size = os.path.getsize(db_file)
             except Exception:
                 db_size = 0
-            try:
-                bot.send_message(ADMIN_ID, f"🤖 Бот запущен: {bot_info.first_name} (@{bot_info.username})\nDB: {db_file} ({db_size // 1024} KB)")
-            except Exception as e:
-                logger.warning(f"Не удалось отправить сообщение админу: {e}")
-        except Exception:
-            pass
-        try:
-            conn = sqlite3.connect('/app/data/bot.db')
-            c = conn.cursor()
-            c.execute("SELECT group_id FROM groups")
-            saved_groups = set(row[0] for row in c.fetchall())
-            for chat_id in saved_groups:
-                try:
-                    chat = bot.get_chat(chat_id)
-                    c.execute("UPDATE groups SET title=? WHERE group_id=?", (chat.title, chat_id))
-                except Exception:
-                    c.execute("DELETE FROM groups WHERE group_id=?", (chat_id,))
-                    logger.info(f"❌ Удалена недоступная группа: {chat_id}")
-            conn.commit()
-            conn.close()
-            logger.info("✅ Список групп обновлен")
+            bot.send_message(ADMIN_ID, f"🤖 Бот запущен: {bot_info.first_name} (@{bot_info.username})\nDB: {db_file} ({db_size // 1024} KB)")
         except Exception as e:
-            logger.error(f"❌ Ошибка при обновлении списка групп: {e}")
+            logger.warning(f"Не удалось отправить сообщение админу: {e}")
+            
     except Exception as e:
         logger.error(f"❌ Ошибка подключения к Telegram API: {e}")
         exit(1)
-    logger.info("🔄 Запускаем polling (resilient mode)...")
-    while True:
+    
+    # Шаг 4: Обновляем список групп
+    try:
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        c.execute("SELECT group_id FROM groups")
+        saved_groups = set(row[0] for row in c.fetchall())
+        for chat_id in saved_groups:
+            try:
+                chat = bot.get_chat(chat_id)
+                c.execute("UPDATE groups SET title=? WHERE group_id=?", (chat.title, chat_id))
+            except Exception:
+                c.execute("DELETE FROM groups WHERE group_id=?", (chat_id,))
+                logger.info(f"❌ Удалена недоступная группа: {chat_id}")
+        conn.commit()
+        conn.close()
+        logger.info("✅ Список групп обновлен")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обновлении списка групп: {e}")
+    
+    # Шаг 5: Запускаем polling с обработкой конфликтов
+    logger.info("🔄 Запускаем polling с обработкой вебхуков...")
+    
+    max_retries = 5
+    retry_count = 0
+    
+    while retry_count < max_retries:
         try:
-            bot.polling(none_stop=True, interval=0, timeout=20)
+            logger.info(f"Попытка запуска polling #{retry_count + 1}")
+            bot.polling(
+                none_stop=True,
+                interval=1,
+                timeout=30,
+                long_polling_timeout=10
+            )
+            
+        except telebot.apihelper.ApiTelegramException as e:
+            if "Conflict: can't use getUpdates method while webhook is active" in str(e):
+                logger.error("❌ ВЕБХУК ВСЕ ЕЩЁ АКТИВЕН!")
+                logger.error("Пробуем удалить еще раз...")
+                
+                # Снова пытаемся удалить вебхук
+                try:
+                    bot.remove_webhook()
+                    time.sleep(2)
+                except:
+                    pass
+                
+                retry_count += 1
+                if retry_count < max_retries:
+                    logger.info(f"Повтор через 5 секунд...")
+                    time.sleep(5)
+                else:
+                    logger.error("❌ Не удалось удалить вебхук после нескольких попыток")
+                    break
+            else:
+                logger.error(f"❌ Другая ошибка Telegram API: {e}")
+                retry_count += 1
+                time.sleep(5)
+                
+        except KeyboardInterrupt:
+            logger.info("🛑 Бот остановлен пользователем")
+            break
+            
         except Exception as e:
-            logger.error(f"❌ Polling crashed: {e}")
-            time.sleep(5)
+            logger.error(f"❌ Общая ошибка: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                logger.info(f"Повтор через 5 секунд...")
+                time.sleep(5)
+            else:
+                break
+    
+    logger.info("👋 Бот завершил работу")
