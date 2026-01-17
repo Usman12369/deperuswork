@@ -39,6 +39,7 @@ logger.info('🚀 Бот запускается...')
 logger.info(f'📂 Текущая директория: {os.getcwd()}')
 
 MAX_BET_LIMIT = None
+REFERRAL_AWARD = 100
 
 class Database:
     def __init__(self):
@@ -179,6 +180,18 @@ def get_db():
                     status TEXT DEFAULT 'pending',
                     admin_id INTEGER,
                     decision_date TEXT
+                )''',
+                '''CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
+                    balance INTEGER DEFAULT 10000, depuses INTEGER DEFAULT 0,
+                    vip_until TEXT, prefix TEXT DEFAULT 'Игрок', brackets TEXT DEFAULT '[]',
+                    wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, messages_count INTEGER DEFAULT 0,
+                    last_casino INTEGER DEFAULT 0, last_bonus INTEGER DEFAULT 0,
+                    biggest_bet INTEGER DEFAULT 0, biggest_win INTEGER DEFAULT 0, biggest_loss INTEGER DEFAULT 0,
+                    last_stats INTEGER DEFAULT 0, last_top INTEGER DEFAULT 0, last_apartment INTEGER DEFAULT 0,
+                    last_records INTEGER DEFAULT 0, last_commands INTEGER DEFAULT 0, last_rules INTEGER DEFAULT 0,
+                    got_gift INTEGER DEFAULT 0, last_daily_bonus TEXT, banner_file_id TEXT, banner_type TEXT,
+                    referred_by INTEGER DEFAULT 0, referrals_count INTEGER DEFAULT 0  -- ← ДОБАВИЛИ ЭТО
                 )''',
             ]
             for table in tables:
@@ -426,10 +439,67 @@ def get_sell_keyboard(user_id):
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     user_id = message.from_user.id
-    db.create_user(user_id, message.from_user.username, message.from_user.first_name)
+    username = message.from_user.username
+    first_name = message.from_user.first_name
     
+    # Проверяем, новый ли пользователь
+    existing_user = db.get_user(user_id)
+    
+    # Создаем пользователя
+    db.create_user(user_id, username, first_name)
+    
+    # Обработка реферальной ссылки
+    referral_award_given = False
+    if len(message.text.split()) > 1:
+        referral_code = message.text.split()[1]
+        
+        # Проверяем, валидный ли реферальный код (должен быть числом)
+        if referral_code.isdigit():
+            referrer_id = int(referral_code)
+            
+            # Проверяем условия для награды:
+            # 1. Реферер существует и это не сам пользователь
+            # 2. Пользователь новый (только что создан)
+            # 3. Пользователь еще не был приглашен кем-либо
+            if (referrer_id != user_id and 
+                db.get_user(referrer_id) and 
+                not existing_user and 
+                not db.get_user(user_id)[28]):  # Проверяем, не приглашен ли уже
+                
+                # Даем награду рефереру
+                referrer = db.get_user(referrer_id)
+                new_depuses = referrer[4] + REFERRAL_AWARD
+                new_referrals = referrer[29] + 1 if referrer[29] else 1
+                
+                # Обновляем реферера
+                db.update_user(referrer_id, 
+                             depuses=new_depuses,
+                             referrals_count=new_referrals)
+                
+                # Отмечаем, кто пригласил пользователя
+                db.update_user(user_id, referred_by=referrer_id)
+                
+                referral_award_given = True
+                
+                # Уведомляем реферера
+                try:
+                    referrer_name = format_username(referrer_id, referrer[1], referrer[2])
+                    bot.send_message(referrer_id, 
+                                   f"🎉 *Новый реферал!*\n\n"
+                                   f"👤 {first_name} присоединился по вашей ссылке!\n"
+                                   f"💰 +{REFERRAL_AWARD} депусов\n"
+                                   f"📊 Всего рефералов: {new_referrals}",
+                                   parse_mode='Markdown')
+                except:
+                    pass
+    
+    # Текст приветствия
     text = "🎮 *Добро пожаловать в экономического бота!*\n\n"
     text += "💰 *Стартовый баланс:* 10,000 теньге\n"
+    
+    if referral_award_given:
+        text += f"🎁 *Реферальный бонус:* +{REFERRAL_AWARD} депусов вашему пригласителю!\n\n"
+    
     text += "🎰 *Доступные команды:*\n"
     text += "• `Баланс` / `Б` - ваш баланс\n"
     text += "• `Казино [сумма]` - игра в казино\n"
@@ -448,11 +518,17 @@ def start_cmd(message):
     text += "• `Рпкоманды` - список РП команд\n"
     text += "• `Моя семья` - управление семьей\n"
     text += "• `Усыновить` / `Удочерить` - усыновить ребенка\n"
-    text += "• `Жениться` / `Брак` - создать брак\n\n"
+    text += "• `Жениться` / `Брак` - создать брак\n"
+    text += "• `Реферал` - ваша реферальная ссылка\n\n"
+    
+    # Показываем реферальную ссылку новому пользователю
+    text += "🔗 *Ваша реферальная ссылка:*\n"
+    text += f"`https://t.me/{bot.get_me().username}?start={user_id}`\n\n"
+    
     text += "📖 *Используйте кнопки ниже для навигации*"
     
     bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
-
+    
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == "helpbot" and m.from_user.id == ADMIN_ID)
 def admin_helpbot_handler(message):
     text = (
@@ -476,6 +552,86 @@ def admin_helpbot_handler(message):
         "<b>правила</b> — показать правила группы.\n"
     )
     bot.send_message(message.chat.id, text, parse_mode='HTML')
+
+
+@bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(реферал|реф|рефералка|пригласить)$', m.text))
+def referral_handler(message):
+    try:
+        user_id = message.from_user.id
+        user = db.get_user(user_id)
+        
+        if not user:
+            bot.reply_to(message, "❌ Пользователь не найден")
+            return
+        
+        # Получаем данные рефералов
+        referrals_count = user[29] if len(user) > 29 else 0
+        referred_by = user[28] if len(user) > 28 else 0
+        
+        # Генерируем реферальную ссылку
+        bot_username = bot.get_me().username
+        referral_link = f"https://t.me/{bot_username}?start={user_id}"
+        
+        # Информация о том, кто пригласил
+        referrer_info = ""
+        if referred_by:
+            referrer = db.get_user(referred_by)
+            if referrer:
+                referrer_name = format_username(referred_by, referrer[1], referrer[2])
+                referrer_info = f"👤 *Вас пригласил:* {safe_md(referrer_name)}\n\n"
+        
+        # Текст ответа
+        text = f"👥 *Реферальная система*\n\n"
+        text += referrer_info
+        text += f"📊 *Ваша статистика:*\n"
+        text += f"• Приглашено людей: `{referrals_count}`\n"
+        text += f"• Заработано депусов: `{referrals_count * REFERRAL_AWARD}`\n\n"
+        
+        text += f"💰 *Награда за приглашение:* `{REFERRAL_AWARD}` депусов\n\n"
+        
+        text += f"🔗 *Ваша ссылка:*\n"
+        text += f"`{referral_link}`\n\n"
+        
+        text += f"💡 *Как приглашать:*\n"
+        text += f"1. Отправьте другу ссылку выше\n"
+        text += f"2. Друг должен НИКОГДА не запускать бота\n"
+        text += f"3. При первом запуске он нажимает вашу ссылку\n"
+        text += f"4. Вы получаете {REFERRAL_AWARD} депусов!"
+        
+        bot.reply_to(message, text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка в реферале: {e}")
+        bot.reply_to(message, "❌ Произошла ошибка")
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('setaward=') and m.from_user.id == ADMIN_ID)
+def set_award_handler(message):
+    global REFERRAL_AWARD
+    try:
+        # Извлекаем сумму из команды
+        parts = message.text.split('=')
+        if len(parts) != 2 or not parts[1].isdigit():
+            bot.reply_to(message, "❌ Неправильный формат! Используйте: `setaward=100`")
+            return
+        
+        new_award = int(parts[1])
+        
+        if new_award <= 0:
+            bot.reply_to(message, "❌ Награда должна быть положительной")
+            return
+        
+        if new_award > 10000:
+            bot.reply_to(message, "❌ Слишком большая награда! Максимум: 10,000")
+            return
+        
+        REFERRAL_AWARD = new_award
+        
+        bot.reply_to(message, f"✅ Награда за реферала установлена: `{REFERRAL_AWARD}` депусов")
+        
+    except Exception as e:
+        logger.error(f"Ошибка установки награды: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
 
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == "ботголос" and m.from_user.id == ADMIN_ID)
 def broadcast_to_groups_handler(message):
@@ -1003,7 +1159,10 @@ def profile_handler(message):
         # Информация о квартирах
         if total_apartments > 0:
             profile_text += f"🏠 *Квартиры:* {total_apartments} ({renovated_apartments} с ремонтом)\n\n"
-        
+        # Реферальная статистика
+        ref_count = user[29] if len(user) > 29 else 0
+        if ref_count > 0:
+        profile_text += f"\n👥 *Рефералы:* {ref_count} человек"
         # Баланс и статистика
         profile_text += f"💰 *Тенге:* `{balance:,}`\n"
         profile_text += f"🎯 *Депусы:* `{depuses:,}`\n\n"
@@ -1053,6 +1212,41 @@ def profile_handler(message):
         logger.error(f"Ошибка в профиле: {e}", exc_info=True)
         bot.reply_to(message, f"❌ Ошибка при получении профиля")
 
+@bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(топ рефералов|топ пригласивших)$', m.text))
+def top_referrals_handler(message):
+    try:
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        
+        # Получаем топ 10 по количеству рефералов
+        c.execute('''SELECT user_id, first_name, referrals_count 
+                     FROM users 
+                     WHERE referrals_count > 0 
+                     ORDER BY referrals_count DESC 
+                     LIMIT 10''')
+        top_referrals = c.fetchall()
+        
+        conn.close()
+        
+        if not top_referrals:
+            bot.reply_to(message, "📭 Пока никто не пригласил друзей!")
+            return
+        
+        top_text = "🏆 *ТОП 10 ПО ПРИГЛАШЕНИЯМ*\n\n"
+        
+        for i, (user_id, name, count) in enumerate(top_referrals, 1):
+            safe_name = safe_md(name)
+            earned = count * REFERRAL_AWARD
+            top_text += f"{i}. {safe_name} - {count} чел. (заработано: {earned} д)\n"
+        
+        top_text += f"\n💰 *Награда за приглашение:* {REFERRAL_AWARD} депусов"
+        
+        bot.reply_to(message, top_text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка топа рефералов: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        
 @bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(топ|top)', m.text))
 def top_handler(message):
     try:
