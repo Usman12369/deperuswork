@@ -735,10 +735,17 @@ def handle_new_members(message):
         logger.error(f"❌ Ошибка при обработке new_chat_members: {e}")
 
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "/setbotlogs" and m.from_user.id == ADMIN_ID and message.message_thread_id is not None)
+@bot.message_handler(commands=['setbotlogs'])
 def set_bot_logs_topic_handler(message):
     """Устанавливает текущую тему как тему для логов бота"""
     try:
+        if message.from_user.id != ADMIN_ID:
+            return
+            
+        if not hasattr(message, 'message_thread_id') or message.message_thread_id is None:
+            bot.reply_to(message, "❌ Эту команду нужно использовать внутри темы!")
+            return
+            
         chat_id = message.chat.id
         thread_id = message.message_thread_id
         chat_title = message.chat.title
@@ -771,10 +778,21 @@ def set_bot_logs_topic_handler(message):
         logger.error(f"Ошибка настройки топика бота: {e}")
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
+# БЫЛО:
 @bot.message_handler(func=lambda m: m.text and m.text.lower() == "/setuserlogs" and m.from_user.id == ADMIN_ID and message.message_thread_id is not None)
+
+# СТАНО:
+@bot.message_handler(commands=['setuserlogs'])
 def set_user_logs_topic_handler(message):
     """Устанавливает текущую тему как тему для логов игроков"""
     try:
+        if message.from_user.id != ADMIN_ID:
+            return
+            
+        if not hasattr(message, 'message_thread_id') or message.message_thread_id is None:
+            bot.reply_to(message, "❌ Эту команду нужно использовать внутри темы!")
+            return
+            
         chat_id = message.chat.id
         thread_id = message.message_thread_id
         chat_title = message.chat.title
