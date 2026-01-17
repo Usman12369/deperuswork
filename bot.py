@@ -1162,8 +1162,8 @@ def profile_handler(message):
         # Реферальная статистика
         ref_count = user[29] if len(user) > 29 else 0
         if ref_count > 0:
-        profile_text += f"\n👥 *Рефералы:* {ref_count} человек"
-        # Баланс и статистика
+            profile_text += f"\n👥 *Рефералы:* {ref_count} человек"
+# Баланс и статистика
         profile_text += f"💰 *Тенге:* `{balance:,}`\n"
         profile_text += f"🎯 *Депусы:* `{depuses:,}`\n\n"
         profile_text += f"📊 *Статистика:*\n"
