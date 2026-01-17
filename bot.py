@@ -4158,7 +4158,7 @@ if __name__ == "__main__":
         bot_info = bot.get_me()
         logger.info(f"✅ Подключение к Telegram API: {bot_info.first_name} (@{bot_info.username})")
         startup_message = f"🚀 <b>БОТ ЗАПУЩЕН</b>\n\n{bot_info.first_name} (@{bot_info.username})\n🕐 {datetime.now().strftime('%H:%M %d.%m.%Y')}"
-    send_to_bot_logs(startup_message)
+        send_to_bot_logs(startup_message)
         try:
             db_file = '/app/data/bot.db'
             try:
