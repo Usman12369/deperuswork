@@ -16,6 +16,7 @@ import html
 import urllib.parse
 import traceback
 import requests
+import telebot
 
 if sys.stdout.encoding != 'UTF-8':
     sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
