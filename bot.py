@@ -194,6 +194,15 @@ def get_db():
                     got_gift INTEGER DEFAULT 0, last_daily_bonus TEXT, banner_file_id TEXT, banner_type TEXT,
                     referred_by INTEGER DEFAULT 0, referrals_count INTEGER DEFAULT 0  -- ← ДОБАВИЛИ ЭТО
                 )''',
+                '''CREATE TABLE IF NOT EXISTS group_topics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER,
+                    topic_type TEXT,  -- 'bot_logs' или 'user_logs'
+                    thread_id INTEGER,  # ID топика в группе
+                    topic_name TEXT,
+                    added_date TEXT,
+                    UNIQUE(topic_type)  # Чтобы был только один топик каждого типа
+                )''',
             ]
             for table in tables:
                 try:
@@ -255,6 +264,52 @@ def format_username(user_id, username, first_name):
         return formatted_name
     return first_name
 
+def send_to_bot_logs(message_text, parse_mode='HTML'):
+    """Отправляет сообщение в тему логов бота"""
+    try:
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        c.execute("SELECT chat_id, thread_id FROM group_topics WHERE topic_type='bot_logs'")
+        result = c.fetchone()
+        conn.close()
+        
+        if result:
+            chat_id, thread_id = result
+            bot.send_message(
+                chat_id=chat_id,
+                message_thread_id=thread_id,
+                text=message_text,
+                parse_mode=parse_mode
+            )
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка отправки в логи бота: {e}")
+        return False
+
+def send_to_user_logs(message_text, parse_mode='HTML'):
+    """Отправляет сообщение в тему логов игроков"""
+    try:
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        c.execute("SELECT chat_id, thread_id FROM group_topics WHERE topic_type='user_logs'")
+        result = c.fetchone()
+        conn.close()
+        
+        if result:
+            chat_id, thread_id = result
+            bot.send_message(
+                chat_id=chat_id,
+                message_thread_id=thread_id,
+                text=message_text,
+                parse_mode=parse_mode
+            )
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка отправки в логи игроков: {e}")
+        return False
+        
 def safe_md(text: str) -> str:
     """Escape common Markdown characters for parse_mode='Markdown' (v1)."""
     if text is None:
@@ -437,6 +492,7 @@ def get_sell_keyboard(user_id):
     return keyboard
 
 # ========== СИСТЕМНЫЕ КОМАНДЫ ==========
+# ========== СИСТЕМНЫЕ КОМАНДЫ ==========
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     user_id = message.from_user.id
@@ -446,10 +502,58 @@ def start_cmd(message):
     # Проверяем, новый ли пользователь
     existing_user = db.get_user(user_id)
     
+    # ====== АНАЛИЗИРУЕМ ОТКУДА ПРИШЕЛ ПОЛЬЗОВАТЕЛЬ ======
+    registration_source = 'start'
+    referred_by = 0
+    
+    if len(message.text.split()) > 1:
+        param = message.text.split()[1]
+        if param.isdigit() and int(param) != user_id:
+            referred_by = int(param)
+            registration_source = 'referral'
+    
+    # ====== СОХРАНЯЕМ ИНФОРМАЦИЮ О РЕГИСТРАЦИИ ======
+    conn = sqlite3.connect('/app/data/bot.db')
+    c = conn.cursor()
+    c.execute('''INSERT OR REPLACE INTO user_registrations 
+                 (user_id, username, first_name, referred_by, registration_date, registration_source) 
+                 VALUES (?, ?, ?, ?, ?, ?)''',
+             (user_id, username, first_name, referred_by, 
+              datetime.now().isoformat(), registration_source))
+    conn.commit()
+    
+    # ====== ПОЛУЧАЕМ ИНФОРМАЦИЮ О ТОМ, КТО ПРИГЛАСИЛ ======
+    referrer_info = ""
+    if referred_by > 0:
+        c.execute("SELECT first_name, username FROM users WHERE user_id=?", (referred_by,))
+        referrer = c.fetchone()
+        if referrer:
+            referrer_name = referrer[0]
+            referrer_username = referrer[1]
+            referrer_link = f'<a href="tg://user?id={referred_by}">{referrer_name}</a>'
+            if referrer_username:
+                referrer_link = f'<a href="https://t.me/{referrer_username}">{referrer_name}</a>'
+            referrer_info = f" по приглашению от {referrer_link}"
+    
+    conn.close()
+    
     # Создаем пользователя
     db.create_user(user_id, username, first_name)
     
-    # Обработка реферальной ссылки
+    # ====== АВТОМАТИЧЕСКОЕ ЛОГИРОВАНИЕ В ТЕМУ "👥 Действия игроков" ======
+    user_link = f'<a href="tg://user?id={user_id}">{first_name}</a>'
+    if username:
+        user_link = f'<a href="https://t.me/{username}">{first_name}</a>'
+    
+    log_message = f"👤 <b>НОВЫЙ ПОЛЬЗОВАТЕЛЬ</b>\n\n{user_link}\n🆔: <code>{user_id}</code>{referrer_info}\n🕐 {datetime.now().strftime('%H:%M %d.%m.%Y')}"
+    
+    # Отправляем в тему "👥 Действия игроков"
+    send_to_user_logs(log_message)
+    
+    # Логируем в консоль для отладки
+    logger.info(f"📝 Зарегистрирован: {first_name} (@{username}) ID: {user_id}")
+    
+    # ====== ОБРАБОТКА РЕФЕРАЛЬНОЙ НАГРАДЫ (существующий код) ======
     referral_award_given = False
     if len(message.text.split()) > 1:
         referral_code = message.text.split()[1]
@@ -530,6 +634,7 @@ def start_cmd(message):
     
     bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
 
+
 @bot.message_handler(func=lambda m: m.text and m.text.startswith('/limvip/') and m.from_user.id == ADMIN_ID)
 def set_vip_bonus_handler(message):
     global VIP_BET_BONUS
@@ -574,6 +679,133 @@ def admin_helpbot_handler(message):
     )
     bot.send_message(message.chat.id, text, parse_mode='HTML')
 
+
+@bot.message_handler(content_types=['new_chat_members'])
+def handle_new_members(message):
+    try:
+        for new_member in message.new_chat_members:
+            if new_member.id == bot.get_me().id:
+                chat_title = message.chat.title
+                chat_id = message.chat.id
+                chat_type = message.chat.type
+                
+                # ====== ЛОГИРУЕМ В ТЕМУ БОТА ======
+                added_by_link = f'<a href="tg://user?id={message.from_user.id}">{message.from_user.first_name}</a>'
+                if message.from_user.username:
+                    added_by_link = f'<a href="https://t.me/{message.from_user.username}">{message.from_user.first_name}</a>'
+                
+                bot_log_message = (
+                    f"📢 <b>БОТ ДОБАВЛЕН В ГРУППУ</b>\n\n"
+                    f"🏷️ <b>Название:</b> {chat_title}\n"
+                    f"🆔 <b>ID:</b> <code>{chat_id}</code>\n"
+                    f"📁 <b>Тип:</b> {chat_type}\n"
+                    f"👤 <b>Добавил:</b> {added_by_link}\n"
+                    f"🕐 <b>Время:</b> {datetime.now().strftime('%H:%M %d.%m.%Y')}"
+                )
+                
+                send_to_bot_logs(bot_log_message)
+                
+                # Сохраняем в базу
+                conn = sqlite3.connect('/app/data/bot.db')
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO groups (group_id, title, added_date) VALUES (?, ?, ?)",
+                         (chat_id, chat_title, datetime.now().isoformat()))
+                conn.commit()
+                conn.close()
+                
+                # Приветственное сообщение
+                welcome_text = (
+                    "🤖 <b>Приветствую! Я экономический бот!</b>\n\n"
+                    "💎 <b>Основные возможности:</b>\n"
+                    "• 💰 Баланс и переводы\n"
+                    "• 🎰 Казино и игры\n"
+                    "• 🏠 Квартиры и недвижимость\n"
+                    "• 👑 VIP система\n"
+                    "• 👨‍👩‍👧‍👦 Семейная система\n"
+                    "• 🎭 РП команды\n\n"
+                    "📚 <b>Для начала работы напишите мне в ЛС</b> /start"
+                )
+                
+                try:
+                    bot.send_message(chat_id, welcome_text, parse_mode='HTML')
+                except:
+                    pass
+                    
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обработке new_chat_members: {e}")
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "/setbotlogs" and m.from_user.id == ADMIN_ID and message.message_thread_id is not None)
+def set_bot_logs_topic_handler(message):
+    """Устанавливает текущую тему как тему для логов бота"""
+    try:
+        chat_id = message.chat.id
+        thread_id = message.message_thread_id
+        chat_title = message.chat.title
+        
+        # Сохраняем в базу
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        
+        # Удаляем старую запись если есть
+        c.execute("DELETE FROM group_topics WHERE topic_type='bot_logs'")
+        
+        # Добавляем новую
+        c.execute("INSERT INTO group_topics (chat_id, topic_type, thread_id, topic_name, added_date) VALUES (?, ?, ?, ?, ?)",
+                 (chat_id, 'bot_logs', thread_id, '🤖 Логи бота', datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        
+        # Тестовое сообщение в эту тему
+        test_msg = "✅ *Тема для логов бота настроена!*\n\nТеперь сюда будут приходить:\n• Запуск/остановка бота\n• Ошибки\n• VIP покупки\n• Баннеры\n• Админ действия"
+        
+        bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            text=test_msg,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка настройки топика бота: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "/setuserlogs" and m.from_user.id == ADMIN_ID and message.message_thread_id is not None)
+def set_user_logs_topic_handler(message):
+    """Устанавливает текущую тему как тему для логов игроков"""
+    try:
+        chat_id = message.chat.id
+        thread_id = message.message_thread_id
+        chat_title = message.chat.title
+        
+        # Сохраняем в базу
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        
+        # Удаляем старую запись если есть
+        c.execute("DELETE FROM group_topics WHERE topic_type='user_logs'")
+        
+        # Добавляем новую
+        c.execute("INSERT INTO group_topics (chat_id, topic_type, thread_id, topic_name, added_date) VALUES (?, ?, ?, ?, ?)",
+                 (chat_id, 'user_logs', thread_id, '👥 Действия игроков', datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        
+        # Тестовое сообщение в эту тему
+        test_msg = "✅ *Тема для логов игроков настроена!*\n\nТеперь сюда будут приходить:\n• Новые регистрации\n• Крупные выигрыши/проигрыши\n• Покупки\n• Создание семьи\n• Рефералы"
+        
+        bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            text=test_msg,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка настройки топика игроков: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
 @bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(реферал|реф|рефералка|пригласить)$', m.text))
 def referral_handler(message):
@@ -3365,7 +3597,27 @@ def all_messages_handler(message):
             
     except Exception as e:
         logger.error(f"Error in all_messages_handler: {e}")
-
+        
+@bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == "инфолог" and m.from_user.id == ADMIN_ID)
+def log_info_handler(message):
+    text = (
+        "📋 <b>НАСТРОЙКА АВТОМАТИЧЕСКОГО ЛОГИРОВАНИЯ</b>\n\n"
+        "<b>1. Создайте группу и включите темы</b>\n"
+        "   • Настройки группы → Тема → Включить\n\n"
+        "<b>2. Создайте 2 темы:</b>\n"
+        "   • 🤖 Логи бота\n"
+        "   • 👥 Действия игроков\n\n"
+        "<b>3. Настройте каждую тему:</b>\n"
+        "   • Зайдите в тему <b>🤖 Логи бота</b>\n"
+        "   • Напишите <code>/setbotlogs</code>\n"
+        "   • Зайдите в тему <b>👥 Действия игроков</b>\n"
+        "   • Напишите <code>/setuserlogs</code>\n\n"
+        "<b>✅ Готово! Теперь все будет логироваться автоматически:</b>\n"
+        "• 🤖 Запуск/ошибки/покупки → в тему бота\n"
+        "• 👥 Новые игроки/выигрыши → в тему игроков"
+    )
+    bot.send_message(message.chat.id, text, parse_mode='HTML')
+    
 @bot.message_handler(content_types=['new_chat_members'])
 def handle_new_members(message):
     try:
@@ -3905,7 +4157,8 @@ if __name__ == "__main__":
     try:
         bot_info = bot.get_me()
         logger.info(f"✅ Подключение к Telegram API: {bot_info.first_name} (@{bot_info.username})")
-        
+        startup_message = f"🚀 <b>БОТ ЗАПУЩЕН</b>\n\n{bot_info.first_name} (@{bot_info.username})\n🕐 {datetime.now().strftime('%H:%M %d.%m.%Y')}"
+    send_to_bot_logs(startup_message)
         try:
             db_file = '/app/data/bot.db'
             try:
