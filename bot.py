@@ -40,6 +40,7 @@ logger.info(f'📂 Текущая директория: {os.getcwd()}')
 
 MAX_BET_LIMIT = None
 REFERRAL_AWARD = 100
+VIP_BET_BONUS = 0
 
 class Database:
     def __init__(self):
@@ -528,7 +529,27 @@ def start_cmd(message):
     text += "📖 *Используйте кнопки ниже для навигации*"
     
     bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
-    
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('/limvip/') and m.from_user.id == ADMIN_ID)
+def set_vip_bonus_handler(message):
+    global VIP_BET_BONUS
+    try:
+        parts = message.text.split('/')
+        if len(parts) < 3 or not parts[2].isdigit():
+            bot.reply_to(message, "❌ Пример: `/limvip/100000`")
+            return
+        
+        VIP_BET_BONUS = int(parts[2])
+        
+        if VIP_BET_BONUS < 0:
+            bot.reply_to(message, "❌ Бонус не может быть отрицательным")
+            return
+        
+        bot.reply_to(message, f"✅ VIP бонус установлен: +{VIP_BET_BONUS:,} т\nТеперь VIP могут ставить на {VIP_BET_BONUS:,} т больше чем обычные игроки!")
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == "helpbot" and m.from_user.id == ADMIN_ID)
 def admin_helpbot_handler(message):
     text = (
@@ -863,10 +884,31 @@ def casino_handler(message):
         if amount > user[13]:
             db.update_user(user_id, biggest_bet=amount)
 
-        global MAX_BET_LIMIT
-        if MAX_BET_LIMIT is not None and amount > MAX_BET_LIMIT:
-            bot.reply_to(message, f"❌ Максимальная ставка: {MAX_BET_LIMIT:,} т")
-            return
+        global MAX_BET_LIMIT, VIP_BET_BONUS
+
+        if MAX_BET_LIMIT is not None:
+    # Проверяем VIP статус
+            vip_until = user[5] if len(user) > 5 else None
+            has_vip = False
+    
+            if vip_until:
+                try:
+                    vip_dt = datetime.fromisoformat(vip_until)
+                    has_vip = vip_dt > datetime.now()
+                except:
+                    pass
+    
+    # Определяем лимит для пользователя
+            user_limit = MAX_BET_LIMIT
+            if has_vip:
+                user_limit = MAX_BET_LIMIT + VIP_BET_BONUS
+    
+            if amount > user_limit:
+                if has_vip:
+                    bot.reply_to(message, f"❌ Максимальная ставка для VIP: {user_limit:,} т (обычный лимит +{VIP_BET_BONUS:,} т бонус)")
+                else:
+                    bot.reply_to(message, f"❌ Максимальная ставка: {user_limit:,} т\n💎 Купите VIP чтобы ставить на {VIP_BET_BONUS:,} т больше!")
+                return
 
         # === ТВОИ НОВЫЕ ШАНСЫ НАЧИНАЮТСЯ ЗДЕСЬ ===
         rand = random.random()
@@ -921,6 +963,51 @@ def casino_handler(message):
 
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+@bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(лимиты|limits)$', m.text))
+def show_limits_handler(message):
+    try:
+        user_id = message.from_user.id
+        user = db.get_user(user_id)
+        
+        # Проверяем VIP статус
+        vip_until = user[5] if len(user) > 5 else None
+        has_vip = False
+        
+        if vip_until:
+            try:
+                vip_dt = datetime.fromisoformat(vip_until)
+                has_vip = vip_dt > datetime.now()
+            except:
+                pass
+        
+        text = "🎰 *ЛИМИТЫ СТАВОК В КАЗИНО*\n\n"
+        
+        if MAX_BET_LIMIT is None:
+            text += "📊 *Глобальный лимит:* не установлен\n"
+        else:
+            text += f"📊 *Глобальный лимит:* {MAX_BET_LIMIT:,} т\n"
+        
+        if VIP_BET_BONUS > 0:
+            text += f"💰 *VIP бонус:* +{VIP_BET_BONUS:,} т\n"
+        
+        if MAX_BET_LIMIT is not None:
+            if has_vip:
+                user_limit = MAX_BET_LIMIT + VIP_BET_BONUS
+                text += f"\n✅ *Ваш лимит (VIP):* {user_limit:,} т\n"
+                text += f"🔹 Обычный лимит: {MAX_BET_LIMIT:,} т\n"
+                text += f"🔹 VIP бонус: +{VIP_BET_BONUS:,} т\n"
+            else:
+                text += f"\n📈 *Ваш лимит:* {MAX_BET_LIMIT:,} т\n"
+                text += f"💎 *С VIP будет:* {MAX_BET_LIMIT + VIP_BET_BONUS:,} т (на {VIP_BET_BONUS:,} т больше!)"
+        else:
+            text += "\n📈 *Ограничений на ставки нет*"
+        
+        bot.reply_to(message, text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка показа лимитов: {e}")
+        bot.reply_to(message, "❌ Ошибка при получении информации о лимитах")
         
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("\\lim\\") and m.from_user.id == ADMIN_ID)
 def set_limit_handler(message):
