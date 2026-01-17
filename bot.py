@@ -3616,8 +3616,15 @@ def all_messages_handler(message):
     except Exception as e:
         logger.error(f"Error in all_messages_handler: {e}")
         
+# БЫЛО:
 @bot.message_handler(func=lambda m: m.text and m.text.strip().lower() == "инфолог" and m.from_user.id == ADMIN_ID)
+
+# СТАЛО:
+@bot.message_handler(commands=['инфолог'])
 def log_info_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+        
     text = (
         "📋 <b>НАСТРОЙКА АВТОМАТИЧЕСКОГО ЛОГИРОВАНИЯ</b>\n\n"
         "<b>1. Создайте группу и включите темы</b>\n"
