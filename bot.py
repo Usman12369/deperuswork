@@ -203,6 +203,15 @@ def get_db():
                     added_date TEXT,
                     UNIQUE(topic_type)  # Чтобы был только один топик каждого типа
                 )''',
+    
+                '''CREATE TABLE IF NOT EXISTS user_registrations (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    referred_by INTEGER DEFAULT 0,
+                    registration_date TEXT,
+                    registration_source TEXT DEFAULT 'start'
+                )''',
             ]
             for table in tables:
                 try:
@@ -269,19 +278,33 @@ def send_to_bot_logs(message_text, parse_mode='HTML'):
     try:
         conn = sqlite3.connect('/app/data/bot.db')
         c = conn.cursor()
+        
+        # Проверяем существование таблицы
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='group_topics'")
+        table_exists = c.fetchone()
+        
+        if not table_exists:
+            conn.close()
+            logger.warning("Таблица group_topics не существует")
+            return False
+        
         c.execute("SELECT chat_id, thread_id FROM group_topics WHERE topic_type='bot_logs'")
         result = c.fetchone()
         conn.close()
         
         if result:
             chat_id, thread_id = result
-            bot.send_message(
-                chat_id=chat_id,
-                message_thread_id=thread_id,
-                text=message_text,
-                parse_mode=parse_mode
-            )
-            return True
+            try:
+                bot.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=thread_id,
+                    text=message_text,
+                    parse_mode=parse_mode
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Не удалось отправить в логи бота: {e}")
+                return False
         return False
     except Exception as e:
         logger.error(f"Ошибка отправки в логи бота: {e}")
@@ -292,19 +315,33 @@ def send_to_user_logs(message_text, parse_mode='HTML'):
     try:
         conn = sqlite3.connect('/app/data/bot.db')
         c = conn.cursor()
+        
+        # Проверяем существование таблицы
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='group_topics'")
+        table_exists = c.fetchone()
+        
+        if not table_exists:
+            conn.close()
+            logger.warning("Таблица group_topics не существует")
+            return False
+        
         c.execute("SELECT chat_id, thread_id FROM group_topics WHERE topic_type='user_logs'")
         result = c.fetchone()
         conn.close()
         
         if result:
             chat_id, thread_id = result
-            bot.send_message(
-                chat_id=chat_id,
-                message_thread_id=thread_id,
-                text=message_text,
-                parse_mode=parse_mode
-            )
-            return True
+            try:
+                bot.send_message(
+                    chat_id=chat_id,
+                    message_thread_id=thread_id,
+                    text=message_text,
+                    parse_mode=parse_mode
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Не удалось отправить в логи игроков: {e}")
+                return False
         return False
     except Exception as e:
         logger.error(f"Ошибка отправки в логи игроков: {e}")
@@ -754,6 +791,20 @@ def set_bot_logs_topic_handler(message):
         conn = sqlite3.connect('/app/data/bot.db')
         c = conn.cursor()
         
+        # ВАЖНО: Создаем таблицу если она не существует
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS group_topics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                topic_type TEXT,
+                thread_id INTEGER,
+                topic_name TEXT,
+                added_date TEXT,
+                UNIQUE(topic_type)
+            )
+        ''')
+        conn.commit()
+        
         # Удаляем старую запись если есть
         c.execute("DELETE FROM group_topics WHERE topic_type='bot_logs'")
         
@@ -776,12 +827,12 @@ def set_bot_logs_topic_handler(message):
         
     except Exception as e:
         logger.error(f"Ошибка настройки топика бота: {e}")
-        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        try:
+            bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        except:
+            pass
 
-# БЫЛО:
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "/setuserlogs" and m.from_user.id == ADMIN_ID and message.message_thread_id is not None)
 
-# СТАНО:
 @bot.message_handler(commands=['setuserlogs'])
 def set_user_logs_topic_handler(message):
     """Устанавливает текущую тему как тему для логов игроков"""
@@ -800,6 +851,20 @@ def set_user_logs_topic_handler(message):
         # Сохраняем в базу
         conn = sqlite3.connect('/app/data/bot.db')
         c = conn.cursor()
+        
+        # ВАЖНО: Создаем таблицу если она не существует
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS group_topics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                topic_type TEXT,
+                thread_id INTEGER,
+                topic_name TEXT,
+                added_date TEXT,
+                UNIQUE(topic_type)
+            )
+        ''')
+        conn.commit()
         
         # Удаляем старую запись если есть
         c.execute("DELETE FROM group_topics WHERE topic_type='user_logs'")
@@ -823,7 +888,11 @@ def set_user_logs_topic_handler(message):
         
     except Exception as e:
         logger.error(f"Ошибка настройки топика игроков: {e}")
-        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        try:
+            bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        except:
+            pass
+            
 
 @bot.message_handler(func=lambda m: m.text and re.match(r'(?i)^(реферал|реф|рефералка|пригласить)$', m.text))
 def referral_handler(message):
