@@ -606,7 +606,7 @@ def start_cmd(message):
             if (referrer_id != user_id and 
                 db.get_user(referrer_id) and 
                 not existing_user and 
-                not db.get_user(user_id)[28]):  # Проверяем, не приглашен ли уже
+                not existing_user):  # Проверяем, не приглашен ли уже
                 
                 # Даем награду рефереру
                 referrer = db.get_user(referrer_id)
