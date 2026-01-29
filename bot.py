@@ -32,7 +32,7 @@ except Exception as e:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-TOKEN = '8303157971:AAGCUSiflqQtY403QxjifFYYAiIzcOISlcs'
+TOKEN = '8476967036:AAHs5WP147xxojgP7GbMsDwNPiXu5MCwO_M'
 bot = TeleBot(TOKEN)
 ADMIN_ID = 7019136722
 
