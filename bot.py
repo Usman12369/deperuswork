@@ -213,6 +213,24 @@ def get_db():
                     registration_date TEXT,
                     registration_source TEXT DEFAULT 'start'
                 )''',
+                '''CREATE TABLE IF NOT EXISTS promocodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT UNIQUE,
+                    amount INTEGER,
+                    currency TEXT CHECK(currency IN ('tenge', 'depuses')),
+                    max_uses INTEGER,
+                    used_count INTEGER DEFAULT 0,
+                    created_by INTEGER,
+                    created_date TEXT,
+                    expires_at TEXT
+                )''',
+                '''CREATE TABLE IF NOT EXISTS promocode_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    promocode_id INTEGER,
+                    used_date TEXT,
+                    UNIQUE(user_id, promocode_id)
+                )''',
             ]
             for table in tables:
                 try:
@@ -530,7 +548,6 @@ def get_sell_keyboard(user_id):
     return keyboard
 
 # ========== СИСТЕМНЫЕ КОМАНДЫ ==========
-# ========== СИСТЕМНЫЕ КОМАНДЫ ==========
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
     user_id = message.from_user.id
@@ -671,6 +688,373 @@ def start_cmd(message):
     text += "📖 *Используйте кнопки ниже для навигации*"
     
     bot.send_message(message.chat.id, text, parse_mode='Markdown', reply_markup=main_menu_keyboard())
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('+promo ') and m.from_user.id == ADMIN_ID)
+def create_promocode_handler(message):
+    try:
+        # Формат: +promo CODE AMOUNT CURRENCY MAX_USES [DAYS]
+        # Пример: +promo SUMMER2025 10000 tenge 50 30
+        # Пример: +promo VIPGIFT 100 depuses 10
+        
+        parts = message.text.split()
+        if len(parts) < 5:
+            bot.reply_to(message, "❌ Неправильный формат!\n"
+                                 "Использование: `+promo CODE AMOUNT CURRENCY MAX_USES [DAYS]`\n\n"
+                                 "Примеры:\n"
+                                 "`+promo SUMMER2025 10000 tenge 50` - 10к тенге, 50 использований\n"
+                                 "`+promo VIPGIFT 100 depuses 10 30` - 100 депусов, 10 использований, срок 30 дней",
+                        parse_mode='Markdown')
+            return
+        
+        code = parts[1].upper().strip()
+        amount = int(parts[2])
+        currency = parts[3].lower()
+        max_uses = int(parts[4])
+        
+        # Проверка валюты
+        if currency not in ['tenge', 'depuses']:
+            bot.reply_to(message, "❌ Валюта должна быть 'tenge' или 'depuses'")
+            return
+        
+        # Обработка срока действия
+        expires_days = None
+        if len(parts) > 5:
+            expires_days = int(parts[5])
+        
+        # Расчет даты истечения
+        expires_at = None
+        if expires_days:
+            expires_at = (datetime.now() + timedelta(days=expires_days)).isoformat()
+        
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        
+        # Проверяем существование промокода
+        c.execute("SELECT id FROM promocodes WHERE code=?", (code,))
+        if c.fetchone():
+            conn.close()
+            bot.reply_to(message, f"❌ Промокод `{code}` уже существует!")
+            return
+        
+        # Создаем промокод
+        c.execute('''INSERT INTO promocodes 
+                     (code, amount, currency, max_uses, created_by, created_date, expires_at) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                 (code, amount, currency, max_uses, message.from_user.id, 
+                  datetime.now().isoformat(), expires_at))
+        
+        promocode_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        
+        # Формируем ответ
+        response = f"✅ *Промокод создан!*\n\n"
+        response += f"🆔 ID: `{promocode_id}`\n"
+        response += f"🔑 Код: `{code}`\n"
+        response += f"💰 Сумма: `{amount:,}` {currency}\n"
+        response += f"📊 Использований: `0/{max_uses}`\n"
+        if expires_at:
+            expires_date = datetime.fromisoformat(expires_at).strftime('%d.%m.%Y')
+            response += f"📅 Действует до: {expires_date}\n"
+        else:
+            response += f"📅 Срок: без ограничений\n"
+        
+        bot.reply_to(message, response, parse_mode='Markdown')
+        
+    except ValueError:
+        bot.reply_to(message, "❌ Ошибка в числах! Проверьте формат.")
+    except Exception as e:
+        logger.error(f"Ошибка создания промокода: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('\\promodel ') and m.from_user.id == ADMIN_ID)
+def delete_promocode_handler(message):
+    try:
+        # Формат: \promodel ID
+        parts = message.text.split()
+        if len(parts) != 2:
+            bot.reply_to(message, "❌ Использование: `\\promodel ID`\n"
+                                 "Пример: `\\promodel 1`", parse_mode='Markdown')
+            return
+        
+        promocode_id = int(parts[1])
+        
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        
+        # Получаем информацию о промокоде перед удалением
+        c.execute('''SELECT code FROM promocodes WHERE id=?''', (promocode_id,))
+        promocode = c.fetchone()
+        
+        if not promocode:
+            conn.close()
+            bot.reply_to(message, f"❌ Промокод с ID {promocode_id} не найден!")
+            return
+        
+        code_name = promocode[0]
+        
+        # Удаляем промокод
+        c.execute("DELETE FROM promocodes WHERE id=?", (promocode_id,))
+        
+        # Также удаляем историю использования
+        c.execute("DELETE FROM promocode_usage WHERE promocode_id=?", (promocode_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        bot.reply_to(message, f"✅ Промокод `{code_name}` (ID: {promocode_id}) удален!")
+        
+    except ValueError:
+        bot.reply_to(message, "❌ ID должен быть числом!")
+    except Exception as e:
+        logger.error(f"Ошибка удаления промокода: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('\\promoinfo ') and m.from_user.id == ADMIN_ID)
+def promocode_info_handler(message):
+    try:
+        # Формат: \promoinfo ID или \promoinfo CODE
+        identifier = message.text.split()[1].strip()
+        
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        
+        # Пробуем найти по ID
+        if identifier.isdigit():
+            c.execute('''SELECT id, code, amount, currency, max_uses, used_count, 
+                                created_by, created_date, expires_at 
+                         FROM promocodes WHERE id=?''', (int(identifier),))
+        else:
+            # Ищем по коду
+            c.execute('''SELECT id, code, amount, currency, max_uses, used_count, 
+                                created_by, created_date, expires_at 
+                         FROM promocodes WHERE code=?''', (identifier.upper(),))
+        
+        promocode = c.fetchone()
+        
+        if not promocode:
+            conn.close()
+            bot.reply_to(message, "❌ Промокод не найден!")
+            return
+        
+        # Получаем список пользователей
+        c.execute('''SELECT u.user_id, u.first_name, pu.used_date 
+                     FROM promocode_usage pu
+                     JOIN users u ON pu.user_id = u.user_id
+                     WHERE pu.promocode_id=?
+                     ORDER BY pu.used_date DESC''', (promocode[0],))
+        users = c.fetchall()
+        
+        conn.close()
+        
+        # Формируем информацию
+        id_, code, amount, currency, max_uses, used_count, created_by, created_date, expires_at = promocode
+        
+        response = f"📊 *ИНФОРМАЦИЯ О ПРОМОКОДЕ*\n\n"
+        response += f"🆔 ID: `{id_}`\n"
+        response += f"🔑 Код: `{code}`\n"
+        response += f"💰 Сумма: `{amount:,}` {currency}\n"
+        response += f"📊 Использования: `{used_count}/{max_uses}`\n"
+        
+        # Статус
+        if expires_at and datetime.fromisoformat(expires_at) < datetime.now():
+            status = "❌ Истек"
+        elif used_count >= max_uses:
+            status = "❌ Использован полностью"
+        else:
+            status = f"✅ Активен ({max_uses - used_count} осталось)"
+        
+        response += f"📈 Статус: {status}\n"
+        
+        created = datetime.fromisoformat(created_date).strftime('%d.%m.%Y %H:%M')
+        response += f"📅 Создан: {created}\n"
+        
+        if expires_at:
+            expires = datetime.fromisoformat(expires_at).strftime('%d.%m.%Y')
+            response += f"⏰ Истекает: {expires}\n"
+        
+        if users:
+            response += f"\n👤 *Использовали ({len(users)}):*\n"
+            for i, (user_id, user_name, used_date) in enumerate(users[:10], 1):
+                used = datetime.fromisoformat(used_date).strftime('%d.%m')
+                response += f"{i}. {user_name} ({used})\n"
+            
+            if len(users) > 10:
+                response += f"... и еще {len(users) - 10} пользователей"
+        else:
+            response += "\n📭 Еще никто не использовал"
+        
+        bot.reply_to(message, response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка информации о промокоде: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+
+@bot.message_handler(commands=['code'])
+def activate_promocode_handler(message):
+    try:
+        user_id = message.from_user.id
+        username = message.from_user.username
+        first_name = message.from_user.first_name
+        
+        # Создаем пользователя если его нет
+        db.create_user(user_id, username, first_name)
+        
+        # Проверяем аргументы
+        if len(message.text.split()) < 2:
+            bot.reply_to(message, "🎁 *Активация промокода*\n\n"
+                                 "Использование: `/code ПРОМОКОД`\n"
+                                 "Пример: `/code SUMMER2025`\n\n"
+                                 "💡 Промокоды дают бонусные деньги или депусы!",
+                        parse_mode='Markdown')
+            return
+        
+        code = message.text.split()[1].upper().strip()
+        
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        
+        # Ищем промокод
+        c.execute('''SELECT id, amount, currency, max_uses, used_count, expires_at 
+                     FROM promocodes WHERE code=?''', (code,))
+        promocode = c.fetchone()
+        
+        if not promocode:
+            conn.close()
+            bot.reply_to(message, "❌ Промокод не найден!")
+            return
+        
+        promocode_id, amount, currency, max_uses, used_count, expires_at = promocode
+        
+        # Проверяем срок действия
+        if expires_at and datetime.fromisoformat(expires_at) < datetime.now():
+            conn.close()
+            bot.reply_to(message, "❌ Срок действия промокода истек!")
+            return
+        
+        # Проверяем лимит использований
+        if used_count >= max_uses:
+            conn.close()
+            bot.reply_to(message, "❌ Промокод уже использован максимальное количество раз!")
+            return
+        
+        # Проверяем, не использовал ли уже пользователь этот промокод
+        c.execute('''SELECT id FROM promocode_usage 
+                     WHERE user_id=? AND promocode_id=?''', (user_id, promocode_id))
+        if c.fetchone():
+            conn.close()
+            bot.reply_to(message, "❌ Вы уже использовали этот промокод!")
+            return
+        
+        # Получаем данные пользователя
+        user = db.get_user(user_id)
+        
+        # Начисляем бонус
+        if currency == 'tenge':
+            new_balance = user[3] + amount
+            db.update_user(user_id, balance=new_balance)
+            bonus_text = f"{amount:,} тенге"
+        else:  # depuses
+            new_depuses = user[4] + amount
+            db.update_user(user_id, depuses=new_depuses)
+            bonus_text = f"{amount} депусов"
+        
+        # Обновляем счетчик использований
+        c.execute('''UPDATE promocodes 
+                     SET used_count = used_count + 1 
+                     WHERE id=?''', (promocode_id,))
+        
+        # Записываем использование
+        c.execute('''INSERT INTO promocode_usage 
+                     (user_id, promocode_id, used_date) 
+                     VALUES (?, ?, ?)''',
+                 (user_id, promocode_id, datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        
+        # Формируем ответ
+        response = f"🎉 *Промокод активирован!*\n\n"
+        response += f"🔑 Код: `{code}`\n"
+        response += f"💰 Бонус: +{bonus_text}\n"
+        
+        if currency == 'tenge':
+            response += f"💎 Новый баланс: `{new_balance:,}` т\n"
+        else:
+            response += f"🎯 Депусов: `{new_depuses}` д\n"
+        
+        remaining_uses = max_uses - (used_count + 1)
+        if remaining_uses > 0:
+            response += f"\n📊 Осталось использований: {remaining_uses}"
+        
+        bot.reply_to(message, response, parse_mode='Markdown')
+        
+        # Логируем активацию в тему логов игроков
+        try:
+            user_link = f'<a href="tg://user?id={user_id}">{first_name}</a>'
+            if username:
+                user_link = f'<a href="https://t.me/{username}">{first_name}</a>'
+            
+            log_message = (
+                f"🎁 <b>АКТИВАЦИЯ ПРОМОКОДА</b>\n\n"
+                f"👤 {user_link}\n"
+                f"🔑 Промокод: <code>{code}</code>\n"
+                f"💰 Бонус: {bonus_text}\n"
+                f"🕐 {datetime.now().strftime('%H:%M %d.%m.%Y')}"
+            )
+            
+            send_to_user_logs(log_message)
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"Ошибка активации промокода: {e}")
+        bot.reply_to(message, "❌ Произошла ошибка при активации промокода!")
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip() == "\\promolist" and m.from_user.id == ADMIN_ID)
+def list_promocodes_handler(message):
+    try:
+        conn = sqlite3.connect('/app/data/bot.db')
+        c = conn.cursor()
+        
+        c.execute('''SELECT id, code, amount, currency, max_uses, used_count, 
+                            created_date, expires_at 
+                     FROM promocodes 
+                     ORDER BY id DESC''')
+        promocodes = c.fetchall()
+        conn.close()
+        
+        if not promocodes:
+            bot.reply_to(message, "📭 Нет созданных промокодов")
+            return
+        
+        response = "📋 *СПИСОК ПРОМОКОДОВ*\n\n"
+        
+        for promo in promocodes:
+            id_, code, amount, currency, max_uses, used_count, created_date, expires_at = promo
+            
+            # Определяем статус
+            if expires_at and datetime.fromisoformat(expires_at) < datetime.now():
+                status = "❌ Истек"
+            elif used_count >= max_uses:
+                status = "❌ Использован"
+            else:
+                remaining = max_uses - used_count
+                status = f"✅ Активен ({remaining} осталось)"
+            
+            created = datetime.fromisoformat(created_date).strftime('%d.%m')
+            expires = datetime.fromisoformat(expires_at).strftime('%d.%m') if expires_at else "∞"
+            
+            response += f"🆔 {id_}: `{code}`\n"
+            response += f"   💰 {amount:,} {currency} | 🎯 {used_count}/{max_uses}\n"
+            response += f"   📅 {created} → {expires} | {status}\n\n"
+        
+        bot.reply_to(message, response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка списка промокодов: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith('/limvip/') and m.from_user.id == ADMIN_ID)
