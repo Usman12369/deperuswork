@@ -12,9 +12,8 @@ import telebot
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-TOKEN = os.getenv("BOT_TOKEN", "")
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN is not configured for bot2")
+TOKEN = "8600299933:AAG7SB1h-DOYjml7vjzgQ7-pTbJWO2WJdp0"
+
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7019136722"))
 HELP_HANDLE = os.getenv("HELP_HANDLE", "@U5M4H")
